@@ -80,9 +80,8 @@ func (js *joystickImpl) addElements(elems C.CFArrayRef) {
 		case C.kIOHIDElementTypeInput_Button:
 			fallthrough
 		case C.kIOHIDElementTypeInput_Axis:
-
 			switch usagePage {
-			case C.kHIDPage_GenericDesktop:
+			case C.kHIDPage_GenericDesktop, C.kHIDPage_Simulation:
 				switch usage {
 				case C.kHIDUsage_GD_X:
 					fallthrough
@@ -100,7 +99,7 @@ func (js *joystickImpl) addElements(elems C.CFArrayRef) {
 					fallthrough
 				case C.kHIDUsage_GD_Dial:
 					fallthrough
-				case C.kHIDUsage_GD_Wheel:
+				case C.kHIDUsage_GD_Wheel, C.kHIDUsage_Sim_Brake, C.kHIDUsage_Sim_Accelerator:
 					if js.contains(elem) {
 						continue
 					}
@@ -120,7 +119,7 @@ func (js *joystickImpl) addElements(elems C.CFArrayRef) {
 					})
 					js.state.AxisData = append(js.state.AxisData, 0, 0)
 				}
-			case C.kHIDPage_Button:
+			case C.kHIDPage_Button, C.kHIDPage_Consumer:
 				if js.contains(elem) {
 					continue
 				}
