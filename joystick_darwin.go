@@ -217,13 +217,13 @@ func (js *joystickImpl) Name() string {
 }
 
 func (js *joystickImpl) Read() (State, error) {
+	min := -32767
+	max := 32768
 	for idx, axe := range js.axes {
 		var valueRef C.IOHIDValueRef
 		if C.IOHIDDeviceGetValue(js.ref, axe.ref, &valueRef) != C.kIOReturnSuccess {
 			continue
 		}
-		min := -32767
-		max := 32768
 		value := int(C.IOHIDValueGetIntegerValue(valueRef))
 		if axe.center < 0 {
 			axe.center = value
@@ -249,25 +249,31 @@ func (js *joystickImpl) Read() (State, error) {
 
 		value := int(int(C.IOHIDValueGetIntegerValue(valueRef)))
 
-		if value == 8 {
+		if value == 0 {
 			js.state.AxisData[stateIdxX] = 0
 			js.state.AxisData[stateIdxY] = 0
 			continue
 		}
-		if value == 0 || value == 4 {
-			js.state.AxisData[stateIdxX] = 0
-		} else if value < 4 {
-			js.state.AxisData[stateIdxX] = 32768
+
+		//     1    
+		//   8   2  
+		// 7   0   3
+		//   6   4  
+		//     5    
+		if value == 8 || value == 1 || value == 2 {
+			js.state.AxisData[stateIdxX] = max
+		} else if value == 4 || value == 5 || value == 6 {
+			js.state.AxisData[stateIdxX] = min
 		} else {
-			js.state.AxisData[stateIdxX] = -32767
+			js.state.AxisData[stateIdxX] = 0
 		}
 
-		if value == 2 || value == 6 {
-			js.state.AxisData[stateIdxY] = 0
-		} else if value > 2 && value < 6 {
-			js.state.AxisData[stateIdxY] = 32768
+		if value == 2 || value == 3 || value == 4 {
+			js.state.AxisData[stateIdxY] = max
+		} else if value == 6 || value == 7 || value == 8 {
+			js.state.AxisData[stateIdxY] = min
 		} else {
-			js.state.AxisData[stateIdxY] = -32767
+			js.state.AxisData[stateIdxY] = 0
 		}
 	}
 	buttons := uint32(0)
