@@ -224,17 +224,23 @@ func mapValue(val, srcMin, srcMax, dstMin, dstMax int64) int64 {
 // If successful, a Joystick interface is returned which can be used to
 // read the state of the joystick, else an error is returned
 func Open(id int) (Joystick, error) {
-
-	js := &joystickImpl{}
-	js.id = id
-
-	err := js.getJoyCaps()
+	// Prefer XInput over WinMM: XInputGetState works regardless of window focus,
+	// while joyGetPosEx (WinMM) may stop delivering input when the app loses focus
+	// due to HID exclusive-access behaviour in some drivers.
+	js, err := openXInput(id)
 	if err == nil {
 		return js, nil
 	}
 
-	// Fall back to XInput (e.g. for Xbox controllers which do not support WinMM)
-	return openXInput(id)
+	// Fall back to WinMM for controllers that are not XInput-compatible (e.g. flight sticks)
+	wmJs := &joystickImpl{}
+	wmJs.id = id
+	err = wmJs.getJoyCaps()
+	if err == nil {
+		return wmJs, nil
+	}
+
+	return nil, fmt.Errorf("no joystick found with id %d", id)
 }
 
 func (js *joystickImpl) getJoyCaps() error {
