@@ -1,4 +1,6 @@
 #include <IOKit/hid/IOHIDLib.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <stdlib.h>
 
 // golang callback
 extern void addCallback(void* self, IOReturn res, void *sender, IOHIDDeviceRef ioHIDDeviceObject);
@@ -75,3 +77,26 @@ void closeHIDManager(IOHIDManagerRef manager) {
 	CFRelease(manager);
 }
 
+// Helper function to convert CFStringRef to C string
+char* cfStringToCharPtr(CFStringRef str) {
+    if (str == NULL) return NULL;
+    CFIndex length = CFStringGetLength(str);
+    CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+    char* buffer = (char*)malloc(maxSize);
+    if (CFStringGetCString(str, buffer, maxSize, kCFStringEncodingUTF8)) {
+        return buffer;
+    }
+    free(buffer);
+    return NULL;
+}
+
+// Helper function to extract integer value from CFTypeRef
+int getIntegerValue(CFTypeRef value) {
+    if (value == NULL) return 0;
+    if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+        int result = 0;
+        CFNumberGetValue((CFNumberRef)value, kCFNumberIntType, &result);
+        return result;
+    }
+    return 0;
+}
