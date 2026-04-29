@@ -1,3 +1,4 @@
+//go:build darwin
 // +build darwin
 
 package joystick
@@ -5,19 +6,41 @@ package joystick
 //#cgo LDFLAGS: -framework IOKit -framework CoreFoundation
 /*
 #include <IOKit/hid/IOHIDLib.h>
+#include <CoreFoundation/CoreFoundation.h>
 extern void removeCallback(void* ctx, IOReturn res, void *sender);
 extern IOHIDManagerRef openHIDManager();
 extern void closeHIDManager(IOHIDManagerRef manager);
 extern void addHIDElement(void *value, void *parameter);
+extern char* cfStringToCharPtr(CFStringRef str);
+extern int getIntegerValue(CFTypeRef value);
+#define kManufacturerKey CFSTR(kIOHIDManufacturerKey)
+#define kProductKey CFSTR(kIOHIDProductKey)
+#define kSerialNumberKey CFSTR(kIOHIDSerialNumberKey)
+#define kLocationIDKey CFSTR(kIOHIDLocationIDKey)
 #define kCFRunLoopMode CFSTR("go-joystick")
 */
 import "C"
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"unsafe"
 )
+
+// cfStringToGoString converts a CFStringRef to a Go string
+func cfStringToGoString(cfStr C.CFStringRef) string {
+	if cfStr == 0 {
+		return ""
+	}
+	cStr := C.cfStringToCharPtr(cfStr)
+	if cStr == nil {
+		return ""
+	}
+	s := C.GoString(cStr)
+	C.free(unsafe.Pointer(cStr))
+	return s
+}
 
 type joystickManager struct {
 	ref        C.IOHIDManagerRef
@@ -59,8 +82,47 @@ func addCallback(ctx unsafe.Pointer, res C.IOReturn, sender unsafe.Pointer, devi
 		id:  id,
 		ref: device,
 	}
+
+	// Extract device name from manufacturer and product properties
+	var manufacturerStr, productStr, serialStr string
+	var locationID int
+
+	if manufacturer := C.IOHIDDeviceGetProperty(device, C.kManufacturerKey); manufacturer != 0 {
+		manufacturerStr = cfStringToGoString(C.CFStringRef(manufacturer))
+	}
+	if product := C.IOHIDDeviceGetProperty(device, C.kProductKey); product != 0 {
+		productStr = cfStringToGoString(C.CFStringRef(product))
+	}
+	if serial := C.IOHIDDeviceGetProperty(device, C.kSerialNumberKey); serial != 0 {
+		serialStr = cfStringToGoString(C.CFStringRef(serial))
+	}
+	if location := C.IOHIDDeviceGetProperty(device, C.kLocationIDKey); location != 0 {
+		locationID = int(C.getIntegerValue(location))
+	}
+
+	// Build the device name
+	var nameParts []string
+	if manufacturerStr != "" {
+		nameParts = append(nameParts, manufacturerStr)
+	}
+	if productStr != "" {
+		nameParts = append(nameParts, productStr)
+	}
+	if serialStr != "" {
+		nameParts = append(nameParts, serialStr)
+	}
+	if locationID != 0 {
+		nameParts = append(nameParts, fmt.Sprintf("(0x%x)", locationID))
+	}
+
+	name := strings.Join(nameParts, " ")
+	if name == "" {
+		name = "Unknown Joystick"
+	}
+	impl.name = name
+
 	mgr.devices[id] = impl
-	C.IOHIDDeviceRegisterRemovalCallback(device, C.IOHIDCallback(C.removeCallback), unsafe.Pointer(impl))
+	C.IOHIDDeviceRegisterRemovalCallback(device, C.IOHIDCallback(C.removeCallback), unsafe.Pointer(uintptr(id)))
 	C.IOHIDDeviceScheduleWithRunLoop(device, C.CFRunLoopGetCurrent(), C.kCFRunLoopMode)
 	elems := C.IOHIDDeviceCopyMatchingElements(device, C.CFDictionaryRef(0), C.kIOHIDOptionsTypeNone)
 	impl.addElements(elems)
@@ -80,9 +142,8 @@ func (js *joystickImpl) addElements(elems C.CFArrayRef) {
 		case C.kIOHIDElementTypeInput_Button:
 			fallthrough
 		case C.kIOHIDElementTypeInput_Axis:
-
 			switch usagePage {
-			case C.kHIDPage_GenericDesktop:
+			case C.kHIDPage_GenericDesktop, C.kHIDPage_Simulation:
 				switch usage {
 				case C.kHIDUsage_GD_X:
 					fallthrough
@@ -100,7 +161,7 @@ func (js *joystickImpl) addElements(elems C.CFArrayRef) {
 					fallthrough
 				case C.kHIDUsage_GD_Dial:
 					fallthrough
-				case C.kHIDUsage_GD_Wheel:
+				case C.kHIDUsage_GD_Wheel, C.kHIDUsage_Sim_Brake, C.kHIDUsage_Sim_Accelerator:
 					if js.contains(elem) {
 						continue
 					}
@@ -120,7 +181,7 @@ func (js *joystickImpl) addElements(elems C.CFArrayRef) {
 					})
 					js.state.AxisData = append(js.state.AxisData, 0, 0)
 				}
-			case C.kHIDPage_Button:
+			case C.kHIDPage_Button, C.kHIDPage_Consumer:
 				if js.contains(elem) {
 					continue
 				}
@@ -143,9 +204,13 @@ func removeCallback(self unsafe.Pointer, res C.IOReturn, sender unsafe.Pointer) 
 	if res != C.kIOReturnSuccess {
 		return
 	}
-	impl := (*joystickImpl)(self)
-	impl.ref = C.IOHIDDeviceRef(0)
-	impl.removed = true
+	id := int(uintptr(self))
+	if mgr != nil {
+		if impl, exists := mgr.devices[id]; exists {
+			impl.ref = C.IOHIDDeviceRef(0)
+			impl.removed = true
+		}
+	}
 }
 
 func (mgr *joystickManager) searchFromDeviceRef(ref C.IOHIDDeviceRef) *joystickImpl {
@@ -184,6 +249,7 @@ type joystickImpl struct {
 	id      int
 	ref     C.IOHIDDeviceRef
 	removed bool
+	name    string
 	axes    []*joystickAxis
 	hats    []*joystickHat
 	buttons []*joystickButton
@@ -214,17 +280,17 @@ func (js *joystickImpl) ButtonCount() int {
 }
 
 func (js *joystickImpl) Name() string {
-	return ""
+	return js.name
 }
 
 func (js *joystickImpl) Read() (State, error) {
+	min := -32767
+	max := 32768
 	for idx, axe := range js.axes {
 		var valueRef C.IOHIDValueRef
 		if C.IOHIDDeviceGetValue(js.ref, axe.ref, &valueRef) != C.kIOReturnSuccess {
 			continue
 		}
-		min := -32767
-		max := 32768
 		value := int(C.IOHIDValueGetIntegerValue(valueRef))
 		if axe.center < 0 {
 			axe.center = value
@@ -250,25 +316,31 @@ func (js *joystickImpl) Read() (State, error) {
 
 		value := int(int(C.IOHIDValueGetIntegerValue(valueRef)))
 
-		if value == 8 {
+		if value == 0 {
 			js.state.AxisData[stateIdxX] = 0
 			js.state.AxisData[stateIdxY] = 0
 			continue
 		}
-		if value == 0 || value == 4 {
-			js.state.AxisData[stateIdxX] = 0
-		} else if value < 4 {
-			js.state.AxisData[stateIdxX] = 32768
+
+		//     1    
+		//   8   2  
+		// 7   0   3
+		//   6   4  
+		//     5    
+		if value == 8 || value == 1 || value == 2 {
+			js.state.AxisData[stateIdxX] = max
+		} else if value == 4 || value == 5 || value == 6 {
+			js.state.AxisData[stateIdxX] = min
 		} else {
-			js.state.AxisData[stateIdxX] = -32767
+			js.state.AxisData[stateIdxX] = 0
 		}
 
-		if value == 2 || value == 6 {
-			js.state.AxisData[stateIdxY] = 0
-		} else if value > 2 && value < 6 {
-			js.state.AxisData[stateIdxY] = 32768
+		if value == 2 || value == 3 || value == 4 {
+			js.state.AxisData[stateIdxY] = max
+		} else if value == 6 || value == 7 || value == 8 {
+			js.state.AxisData[stateIdxY] = min
 		} else {
-			js.state.AxisData[stateIdxY] = -32767
+			js.state.AxisData[stateIdxY] = 0
 		}
 	}
 	buttons := uint32(0)
