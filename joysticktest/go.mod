@@ -11,3 +11,5 @@ require (
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	golang.org/x/sys v0.0.0-20220909162455-aba9fc2a8ff2 // indirect
 )
+
+replace github.com/0xcafed00d/joystick => ../
